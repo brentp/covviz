@@ -4,15 +4,8 @@ Coverage visualization; a many-sample coverage browser.
 
 The aim of `covviz` is to highlight regions of significant
 (passing the user's z-score threshold) and sustained (beyond user specified
-distance) deviation of coverage depth from the majority of samples. Significance is determined
-using z-scores for all samples at all points using median absolute deviation.
-In order for regions to be highlighted, points must be significant
-consecutively throughout a user specified distance.
+distance) deviation of coverage depth from the **majority of samples**.
 
-If you are analyzing a low number of samples, deviation may be irrelevant. In
-this case, we can set `--min-samples` to be greater than our sample total
-to skip Z-threshold calculation and plot coverages for all samples at all
-points.
 
 # Getting started
 
@@ -134,6 +127,13 @@ A complete list of arguments can be displayed using:
 covviz --help
 ```
 
+A bed file of exons from a GFF for sending to [mosdepth](https://github.com/brentp/mosdepth) 
+and whose output can then be used as input to `covviz`.
+
+```
+covviz gff-exons $gff > exons.bed
+```
+
 ### Adding custom metadata (.ped)
 
 There is support for non-indexcov .ped files, though you may have to change
@@ -198,3 +198,13 @@ Double-clicking de-selects lines, resets the plot, and de-selects
 samples from the table. Clicking on the gene track launches a search
 for the gene's respective Gene Card. In cases where genes overlap,
 multiple windows/tabs will be opened.
+
+# Details
+
+Significance is determined using z-scores for all samples at all points using median absolute deviation.
+In order for regions to be highlighted, points must be significant consecutively throughout a user specified distance.
+
+If you are analyzing a low number of samples, deviation may be irrelevant. In
+this case, we can set `--min-samples` to be greater than our sample total
+to skip Z-threshold calculation and plot coverages for all samples at all
+points.

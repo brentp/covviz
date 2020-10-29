@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import re
+import sys
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -191,8 +192,35 @@ def parse_args():
     )
     return p.parse_args()
 
+def cli_exons(argv):
+    from .exter import read_gff
+
+    p = argparse.ArgumentParser("gff-exons", formatter_class=Formatter)
+    p.add_argument("-s", "--strip-chr", action="store_true",
+        help="remove 'chr' prefix from chromosome names to match bam/cram")
+    p.add_argument("-a", "--add-chr", action="store_true",
+        help="add 'chr' prefix to chromosome names to match bam/cram")
+    p.add_argument("gff", help="gff(.gz) file containing exons")
+
+    args = p.parse_args(argv)
+
+    d = read_gff(args.gff)
+    for chrom in d:
+        print_chrom = chrom
+        if args.strip_chr and chrom.startswith("chr"):
+            print_chrom = chrom[3:]
+        elif args.add_chr and not chrom.startswith("chr"):
+            print_chrom = "chr" + chrom
+
+        for (s, e, gene) in d[chrom].exons:
+            print("%s\t%d\t%d\t%s" % (print_chrom, s, e, gene))
 
 def cli():
+
+    if len(sys.argv) > 1 and sys.argv[1] == "gff-exons":
+        #sys.argv.remove("gff-exons")
+        return cli_exons(sys.argv[2:])
+
     args = parse_args()
 
     env = Environment(
