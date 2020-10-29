@@ -28,6 +28,7 @@ from .gff import parse_gff
 from .ped import parse_ped
 from .utils import optimize_coords
 from .vcf import parse_vcf
+from .combine import combine_main
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("covviz")
@@ -220,6 +221,9 @@ def cli():
     if len(sys.argv) > 1 and sys.argv[1] == "gff-exons":
         #sys.argv.remove("gff-exons")
         return cli_exons(sys.argv[2:])
+
+    if len(sys.argv) > 1 and sys.argv[1] == "combine":
+        return combine_main(sys.argv[2:])
 
     args = parse_args()
 
