@@ -369,6 +369,7 @@
         // annotation tracks
         let y_offset = -0.10
         let track_idx = 0
+        if(data[chr].annotations == undefined){ data[chr].annotations = {} }
         for (const tracktype of Object.keys(data[chr].annotations)) {
             for (const track of data[chr].annotations[tracktype]) {
                 let trackname = track[0]
@@ -779,7 +780,8 @@
         let seen = new Set()
 
         for (const chr of data.chromosomes) {
-            if ("gff" in data[chr].annotations) {
+
+            if ("annotations" in data[chr] && "gff" in data[chr].annotations) {
                 for (const gff of data[chr].annotations.gff) {
                     let filename = gff[0]
                     let gene_data = gff[1]
