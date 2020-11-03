@@ -31,4 +31,9 @@ Mosdepth outputs a single file for each sample. The `combine` command makes thes
 covviz combine *.regions.bed.gz > combined.bed
 ```
 
+### Running covviz
 
+Given a `combined` file a above. Then you can run `covviz` like this:
+
+```
+covviz

@@ -66,7 +66,7 @@ def parse_args():
     p.add_argument(
         "-z",
         "--z-threshold",
-        default=3.5,
+        default=2.5,
         type=float,
         help=(
             "the point at which we determine a sample is an outlier "
@@ -87,7 +87,7 @@ def parse_args():
     p.add_argument(
         "-s",
         "--slop",
-        default=500000,
+        default=250000,
         type=int,
         help=(
             "slop is the distance to add to traces when plotting -- "
@@ -98,6 +98,11 @@ def parse_args():
     )
     p.add_argument(
         "-o", "--output", default="covviz_report.html", help="output file path"
+    )
+    p.add_argument(
+        "--collapse", action="store_true", help="collapse spaces between"
+        " intervals (and draw position based on index, rather then genomic "
+        " coordinates). This is recommended for exons"
     )
     p.add_argument(
         "-w",
@@ -249,6 +254,7 @@ def cli():
         args.min_samples,
         args.skip_norm,
         args.window,
+        args.collapse,
     )
 
     traces = optimize_coords(traces)
