@@ -1,10 +1,13 @@
 import csv
+import bottleneck as bn
 import logging
 import warnings
 import os
 import sys
 from collections import defaultdict
 from itertools import groupby
+
+from sklearn.decomposition import PCA
 
 import numpy as np
 import pandas as pd
@@ -167,7 +170,15 @@ def parse_sex_groups(filename, sample_col, sex_col):
             groups[row[sex_col]].append(row[sample_col])
     return groups
 
+def sextras(sex_chroms):
+    extras = []
+    for s in sex_chroms:
+        if s.startswith("chr"): extras.append(s[3:])
+        else: extras.append("chr" + s)
+    return sex_chroms
+
 def normalize_depths(path, sex_chroms, median_window=7):
+    logging.info("normalizing depths")
     filename, ext = os.path.splitext(path)
     if ext == ".gz":
         filename, ext = os.path.splitext(filename)
@@ -175,35 +186,50 @@ def normalize_depths(path, sex_chroms, median_window=7):
     output_bed = filename + ".norm.bed.gz"
     df = pd.read_csv(path, sep="\t", low_memory=False)
     # omit 0s from median calculation
-    df[df.iloc[:, 3:] == 0] = np.nan
-    # median values per sample
-    global_sample_median = np.nanmedian(df.iloc[:, 3:], axis=0)
-    # normalize within each sample
-    df.iloc[:, 3:] = df.iloc[:, 3:] / global_sample_median
+    n_non_sample_cols = 3 if df.columns[3] != "GENE" else 4
 
-    extras = []
-    for s in sex_chroms:
-        if s.startswith("chr"): extras.append(s[3:])
-        else: extras.append("chr" + s)
-    sex_chroms = sex_chroms + extras
+    if n_non_sample_cols == 4:
+        # at least 35% of samples must have coverage at a given site or it gets
+        # removed
+        sel = (df.iloc[:, 4:] > 0).sum(axis=1) > (0.35 * (len(df.columns) - n_non_sample_cols))
+        df = df[sel]
+
+    sex_chroms = sex_chroms + sextras(sex_chroms)
+    autosome = ~np.asarray(df.iloc[:, 0].isin(sex_chroms))
+
+    #df[df.iloc[:, n_non_sample_cols:] == 0] = np.nan
+
+    # median values per sample
+    global_sample_median = np.nanmedian(df.iloc[:, n_non_sample_cols:], axis=0)
+    global_sample_median[np.isnan(global_sample_median)] = 1.0
+
+    #global_sample_median[global_sample_median == 0] = 1.0
+    # normalize within each sample
+    df.iloc[:, n_non_sample_cols:] = df.iloc[:, n_non_sample_cols:] / global_sample_median
+    for i in range(n_non_sample_cols, df.shape[1]):
+        inan = np.asarray(np.isnan(df.iloc[:, i]))
+        df.iloc[inan, i] = 1.0 #site_median[inan]
+
+    remove_batches(df, sex_chroms, median_window=median_window)
+
+
 
     # median per site
-    autosome = ~np.asarray(df.iloc[:, 0].isin(sex_chroms))
 
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
-        site_median = np.nanmedian(df.iloc[:, 3:], axis=1)
+        site_median = np.nanmedian(df.iloc[:, n_non_sample_cols:], axis=1)
 
     with np.errstate(invalid='ignore'):
-        site_median[np.isnan(site_median) | (site_median < 0.03)] = 1
+        site_median[np.isnan(site_median)] = 1
     # divide autosomes by median at each site so a given block is centered at
     # middle sample.
-    for i in range(3, df.shape[1]):
-        df.iloc[:, i] = np.where(autosome, df.iloc[:, i] / site_median, df.iloc[:, i])
+    for i in range(n_non_sample_cols, df.shape[1]):
+        #df.iloc[:, i] = np.where(autosome, df.iloc[:, i] / site_median, df.iloc[:, i])
         if median_window > 1:
             df.iloc[:, i] = df.iloc[:, i].rolling(median_window).median() #pd.rolling_median(df.iloc[:, i], median_window)
         inan = np.asarray(np.isnan(df.iloc[:, i]))
-        df.iloc[inan, i] = 0.0
+        df.iloc[inan, i] = 0.0 #site_median[inan]
     #df.to_csv(path_or_buf=output_bed, sep="\t", na_rep=0.0, index=False,
     #        compression='gzip',
     #        float_format="%.2f")
@@ -225,14 +251,16 @@ def identify_outliers(a, threshold=3.5):
     return np.where(np.abs(modified_z_scores) > threshold)
 
 
-def add_roc_traces(path, traces, exclude):
+def add_roc_traces(df, traces, exclude):
     traces["roc"] = dict()
-    df = pd.read_csv(path, sep="\t", low_memory=False)
+    #df = pd.read_csv(path, sep="\t", low_memory=False)
     n_bins = 150
     x_max = 2.5
     traces["roc"]["x_coords"] = [
         round(i, 2) for i in list(np.linspace(0, x_max, n_bins))
     ]
+
+    n_non_sample_cols = 3 if df.columns[3] != "GENE" else 4
 
     for chrom, data in df.groupby(df.columns[0]):
         chrom = str(chrom)
@@ -243,7 +271,7 @@ def add_roc_traces(path, traces, exclude):
         chrom = chrom[3:] if chrom.startswith("chr") else chrom
 
         # pre-normalized data
-        arr = np.asarray(data.iloc[:, 3:])
+        arr = np.asarray(data.iloc[:, n_non_sample_cols:])
         traces["roc"][chrom] = dict()
 
         for i in range(0, arr.shape[1]):
@@ -255,6 +283,62 @@ def add_roc_traces(path, traces, exclude):
             sums = list(sums.astype(float) / max(1, sums[0]))
             traces["roc"][chrom][df.columns[i + 3]] = [round(i, 2) for i in sums]
     return traces
+
+def remove_batches(df, sex_chroms, exp_var_ratio=0.04, median_window=7):
+    logging.info("median window: %d" % median_window)
+    import time
+    clf = PCA(whiten=False, copy=True)
+    n_non_sample_cols = 3 if df.columns[3] != "GENE" else 4
+
+    sex_chroms = sex_chroms + sextras(sex_chroms)
+
+    # median per site
+    autosome = ~np.asarray(df.iloc[:, 0].isin(sex_chroms))
+    t0 = time.time()
+    vals = np.asarray(df.iloc[autosome, n_non_sample_cols:], dtype=np.float32)
+    vals[vals > 5] = 5
+    med = np.median(vals, axis=1)[:, np.newaxis]
+    med[med == 0] = 1
+    vals /= med
+
+    pc_proj = clf.fit_transform(vals) #.transform(vals)
+    print("time to do pca:", time.time() - t0)
+    if clf.explained_variance_ratio_[0] < exp_var_ratio: return
+
+    gt, = np.where(clf.explained_variance_ratio_ < exp_var_ratio)
+    n_pcs = gt[0]
+    print("n_pcs:", n_pcs)
+
+
+    # remove the components that are likely noise
+    print("explained variance:", clf.explained_variance_ratio_[:10])
+    # KNOB
+    # remove principal components that explain more than this cutoff.
+    sel = np.arange(n_pcs, vals.shape[1])
+    print("sel:", sel)
+    mu = np.mean(vals, axis=0)
+    #ovals = vals.copy()
+    # PCA
+    vals = mu + np.dot(pc_proj[:, sel], clf.components_[sel, :])
+    vals[vals > 5] = 5
+
+    df.iloc[autosome, n_non_sample_cols:] = vals
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
+        site_median = np.nanmedian(df.iloc[:, n_non_sample_cols:], axis=1)
+
+    with np.errstate(invalid='ignore'):
+        site_median[np.isnan(site_median) | (site_median < 0.001)] = 1
+
+    for i in range(n_non_sample_cols, df.shape[1]):
+        df.iloc[:, i] = np.where(autosome, df.iloc[:, i] / site_median, df.iloc[:, i])
+        if median_window > 1:
+            med = df.iloc[:, i].rolling(median_window).median()
+            #med[med < 0.01] = 1
+            df.iloc[:, i] = med
+        inan = np.asarray(np.isnan(df.iloc[:, i]))
+        df.iloc[inan, i] = 1.0 #site_median[inan]
 
 
 def parse_bed(
@@ -269,7 +353,8 @@ def parse_bed(
     slop=500000,
     min_samples=8,
     skip_norm=False,
-    window=1
+    window=1,
+    collapse=False
 ):
     bed_traces = dict()
     # chromosomes, in order of appearance
@@ -283,12 +368,15 @@ def parse_bed(
 
     if skip_norm:
         df = pd.read_csv(path, sep="\t", low_memory=False)
+        remove_batches(df, sex_chroms, median_window=window)
     else:
         df = normalize_depths(path, sex_chroms, median_window=window)
 
+
     if True: # temporary to get sane diff.
         header = list(df.columns)
-        samples = header[3:]
+        n_non_sample_cols = 3 if df.columns[3] != "GENE" else 4
+        samples = header[n_non_sample_cols:]
         if groups:
             valid = validate_samples(samples, groups)
             if not valid:
@@ -323,8 +411,10 @@ def parse_bed(
             for not_x_index, row in entries.iterrows():
                 x_index += 1
 
-                x_value = int(row[header[1]])
+                x_value = x_index if collapse else int(row[header[1]])
                 data["x"].append(x_value)
+                if collapse:
+                    data["text"].append("pos: %d" % int(row[header[1]]))
 
                 for group_index, (gid, samples_of_group) in enumerate(
                     sample_groups.items()
@@ -334,8 +424,8 @@ def parse_bed(
                         bounds["upper"].append([])
                         bounds["lower"].append([])
                     if all_points:
-                        sample_values = np.minimum(3, np.asarray(row[3:],
-                            dtype=np.float32))
+                        sample_values = np.minimum(3,
+                                np.asarray(row[n_non_sample_cols:], dtype=np.float32))
                         for i, s in enumerate(samples):
                             data[s].append(float(sample_values[i]))
                     else:
@@ -419,7 +509,7 @@ def parse_bed(
     # bed_traces["sex_chroms"] = sex_chroms
 
     # pass the bed or normed bed
-    add_roc_traces(path, bed_traces, exclude)
+    add_roc_traces(df, bed_traces, exclude)
 
     return bed_traces
 

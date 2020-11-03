@@ -41,6 +41,15 @@ def combine(beds):
             row.append(n[3])
         yield row
 
+def name(path):
+    last = path.split("/")[-1]
+    if last.endswith(".gz"):
+        last = last[:-3]
+    if last.endswith(".bed"):
+        last = last[:-4]
+    if last.endswith(".regions"):
+        last = last[:-len(".regions")]
+    return last
 
 def combine_main(argv=sys.argv[1:]):
     p = argparse.ArgumentParser("combined bed.gz files")
@@ -48,6 +57,8 @@ def combine_main(argv=sys.argv[1:]):
 
     args = p.parse_args(argv)
     print("n bed files: ", len(args.bed), file=sys.stderr)
+
+    print("#chrom\tstart\tend\tGENE\t%s" % "\t".join(name(b) for b in args.bed))
 
     for row in combine(args.bed):
         print("%s\t%s\t%s\t%s\t%s" % (row[0], row[1], row[2], row[3],
