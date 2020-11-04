@@ -194,7 +194,6 @@ def normalize_depths(path, sex_chroms, median_window=7):
         sel = (df.iloc[:, 4:] > 0).sum(axis=1) > (0.35 * (len(df.columns) - n_non_sample_cols))
         df = df[sel]
 
-    sex_chroms = sex_chroms + sextras(sex_chroms)
     autosome = ~np.asarray(df.iloc[:, 0].isin(sex_chroms))
 
     #df[df.iloc[:, n_non_sample_cols:] == 0] = np.nan
@@ -210,7 +209,7 @@ def normalize_depths(path, sex_chroms, median_window=7):
         inan = np.asarray(np.isnan(df.iloc[:, i]))
         df.iloc[inan, i] = 1.0 #site_median[inan]
 
-    remove_batches(df, sex_chroms, median_window=median_window)
+    #remove_batches(df, sex_chroms, median_window=median_window)
 
 
 
@@ -239,6 +238,7 @@ def normalize_depths(path, sex_chroms, median_window=7):
 def identify_outliers(a, threshold=3.5):
     a = np.asarray(a, dtype=np.float32)
     med = np.median(a)
+    if med == 0: return ([], )
     mad = np.median(np.abs(a - med))
     # https://www.ibm.com/support/knowledgecenter/en/SSEP7J_11.1.0/com.ibm.swg.ba.cognos.ug_ca_dshb.doc/modified_z.html
     if mad == 0:
@@ -284,13 +284,65 @@ def add_roc_traces(df, traces, exclude):
             traces["roc"][chrom][df.columns[i + 3]] = [round(i, 2) for i in sums]
     return traces
 
+def remove_batch(chr_df, is_sex_chrom, exp_var_ratio=0.04, median_window=9):
+    n_non_sample_cols = 3 if chr_df.columns[3] != "GENE" else 4
+    import time
+    clf = PCA(whiten=False, copy=True)
+
+    t0 = time.time()
+    vals = np.asarray(chr_df.iloc[:, n_non_sample_cols:], dtype=np.float32)
+    is_zero = vals < 0.02
+    vals[vals > 5] = 5
+    med = np.median(vals, axis=1)[:, np.newaxis]
+    med[med == 0] = 1
+    vals /= med
+
+    pc_proj = clf.fit_transform(vals) #.transform(vals)
+    pca_time = time.time() - t0
+
+    if is_sex_chrom and clf.explained_variance_ratio_[1] > exp_var_ratio or clf.explained_variance_ratio_[0] > exp_var_ratio:
+
+        gt, = np.where(clf.explained_variance_ratio_ < exp_var_ratio)
+        n_pcs = gt[0]
+        print(f"time for PCA: {pca_time:.2f}. removing first {n_pcs} PCs")
+
+
+        # KNOB
+        # remove principal components that explain more than this cutoff.
+        sel = np.arange(n_pcs, vals.shape[1])
+        if is_sex_chrom:
+            sel = np.array([0] + list(sel))
+        mu = np.mean(vals, axis=0)
+        #ovals = vals.copy()
+        # PCA
+        vals = mu + np.dot(pc_proj[:, sel], clf.components_[sel, :])
+        vals[vals > 5] = 5
+
+        chr_df.iloc[:, n_non_sample_cols:] = vals
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
+        site_median = np.nanmedian(chr_df.iloc[:, n_non_sample_cols:], axis=1)
+
+    with np.errstate(invalid='ignore'):
+        site_median[np.isnan(site_median) | (site_median < 0.001)] = 1
+
+    for i in range(n_non_sample_cols, chr_df.shape[1]):
+        chr_df.iloc[:, i] = chr_df.iloc[:, i] / site_median
+        if median_window > 1:
+            med = chr_df.iloc[:, i].rolling(median_window).median()
+            #med[med < 0.01] = 1
+            chr_df.iloc[:, i] = med
+        inan = np.asarray(np.isnan(chr_df.iloc[:, i]))
+        chr_df.iloc[inan, i] = 1.0 #site_median[inan]
+        chr_df.iloc[is_zero[:, i-n_non_sample_cols], i] = 0.0 #site_median[inan]
+
+
 def remove_batches(df, sex_chroms, exp_var_ratio=0.04, median_window=7):
     logging.info("median window: %d" % median_window)
     import time
     clf = PCA(whiten=False, copy=True)
-    n_non_sample_cols = 3 if df.columns[3] != "GENE" else 4
-
-    sex_chroms = sex_chroms + sextras(sex_chroms)
+    n_non_sample_cols = 3 if chr_df.columns[3] != "GENE" else 4
 
     # median per site
     autosome = ~np.asarray(df.iloc[:, 0].isin(sex_chroms))
@@ -303,26 +355,26 @@ def remove_batches(df, sex_chroms, exp_var_ratio=0.04, median_window=7):
 
     pc_proj = clf.fit_transform(vals) #.transform(vals)
     print("time to do pca:", time.time() - t0)
-    if clf.explained_variance_ratio_[0] < exp_var_ratio: return
+    if clf.explained_variance_ratio_[0] > exp_var_ratio:
 
-    gt, = np.where(clf.explained_variance_ratio_ < exp_var_ratio)
-    n_pcs = gt[0]
-    print("n_pcs:", n_pcs)
+        gt, = np.where(clf.explained_variance_ratio_ < exp_var_ratio)
+        n_pcs = gt[0]
+        print("n_pcs:", n_pcs)
 
 
-    # remove the components that are likely noise
-    print("explained variance:", clf.explained_variance_ratio_[:10])
-    # KNOB
-    # remove principal components that explain more than this cutoff.
-    sel = np.arange(n_pcs, vals.shape[1])
-    print("sel:", sel)
-    mu = np.mean(vals, axis=0)
-    #ovals = vals.copy()
-    # PCA
-    vals = mu + np.dot(pc_proj[:, sel], clf.components_[sel, :])
-    vals[vals > 5] = 5
+        # remove the components that are likely noise
+        print("explained variance:", clf.explained_variance_ratio_[:10])
+        # KNOB
+        # remove principal components that explain more than this cutoff.
+        sel = np.arange(n_pcs, vals.shape[1])
+        print("sel:", sel)
+        mu = np.mean(vals, axis=0)
+        #ovals = vals.copy()
+        # PCA
+        vals = mu + np.dot(pc_proj[:, sel], clf.components_[sel, :])
+        vals[vals > 5] = 5
 
-    df.iloc[autosome, n_non_sample_cols:] = vals
+        df.iloc[autosome, n_non_sample_cols:] = vals
 
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', r'All-NaN (slice|axis) encountered')
@@ -366,9 +418,9 @@ def parse_bed(
     if ped:
         groups = parse_sex_groups(ped, sample_col, sex_col)
 
+    sex_chroms = sex_chroms + sextras(sex_chroms)
     if skip_norm:
         df = pd.read_csv(path, sep="\t", low_memory=False)
-        remove_batches(df, sex_chroms, median_window=window)
     else:
         df = normalize_depths(path, sex_chroms, median_window=window)
 
@@ -390,6 +442,8 @@ def parse_bed(
             if exclude.findall(chr):
                 logger.debug("excluding chromosome: %s" % chr)
                 continue
+            entries = entries.copy()
+            remove_batch(entries, chr in sex_chroms, median_window=window)
 
             data = defaultdict(list)
             bounds = dict(upper=[], lower=[])
@@ -451,6 +505,7 @@ def parse_bed(
                     else:
                         # indexes of passing values
                         passing = identify_outliers(sample_values, z_threshold)[0]
+
                         # remove those indexes from the list
                         # sometimes we get a list (x, y) for others we get a
                         # numpy array
